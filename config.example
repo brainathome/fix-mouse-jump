@@ -13,6 +13,12 @@ LEFT_RES="1920x1080"
 CENTER_RES="3840x1600"
 RIGHT_RES="1920x1080"
 
+# ─── Refresh Rates (Hz) ────────────────────────────────────────────────────────
+# Use `xrandr --query` to find supported rates for each monitor
+LEFT_RATE="144"
+CENTER_RATE="144"
+RIGHT_RATE="144"
+
 # ─── Scale Factor ────────────────────────────────────────────────────────────
 # How to calculate:
 #   1. Get physical size and resolution from `xrandr --query`

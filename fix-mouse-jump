@@ -38,6 +38,11 @@ LEFT_RES="1920x1080"
 CENTER_RES="3840x1600"
 RIGHT_RES="1920x1080"
 
+# Refresh rates (Hz) — use `xrandr --query` to find supported rates
+LEFT_RATE="144"
+CENTER_RATE="144"
+RIGHT_RATE="144"
+
 # Scale factor for side monitors
 # Calculate: (center_vertical_px / center_physical_mm) / (side_vertical_px / side_physical_mm)
 # Example:   (1600 / 370) / (1080 / 336) = 4.32 / 3.21 ≈ 1.35
@@ -94,11 +99,11 @@ calculate_positions() {
     CENTER_X=$SCALED_LEFT_W
     RIGHT_X=$(awk "BEGIN { printf \"%.0f\", $SCALED_LEFT_W + $center_w }")
 
-    # Vertical offset to center side monitors relative to center
-    VERT_OFFSET=$(awk "BEGIN { printf \"%.0f\", ($center_h - $SCALED_LEFT_H) / 2 }")
+    # Vertical offset — bottom-aligned (monitors sit on the same desk surface)
+    VERT_OFFSET=$(awk "BEGIN { printf \"%.0f\", $center_h - $SCALED_LEFT_H }")
 
     # Revert positions (no scaling)
-    REVERT_LEFT_Y=$(( (center_h - left_h) / 2 ))
+    REVERT_LEFT_Y=$(( center_h - left_h ))
     REVERT_RIGHT_X=$(( left_w + center_w ))
 }
 
@@ -111,11 +116,65 @@ apply_scale() {
     log_msg "  ${RIGHT_MONITOR}:  ${RIGHT_RES} scaled ${SCALE}x → pos ${RIGHT_X}x${VERT_OFFSET}"
 
     xrandr \
-        --output "$LEFT_MONITOR"   --mode "$LEFT_RES"   --scale "${SCALE}x${SCALE}" --pos "0x${VERT_OFFSET}" \
-        --output "$CENTER_MONITOR" --mode "$CENTER_RES" --scale "1x1"               --pos "${CENTER_X}x0" --primary \
-        --output "$RIGHT_MONITOR"  --mode "$RIGHT_RES"  --scale "${SCALE}x${SCALE}" --pos "${RIGHT_X}x${VERT_OFFSET}"
+        --output "$LEFT_MONITOR"   --mode "$LEFT_RES"   --rate "$LEFT_RATE"   --scale "${SCALE}x${SCALE}" --pos "0x${VERT_OFFSET}" \
+        --output "$CENTER_MONITOR" --mode "$CENTER_RES" --rate "$CENTER_RATE" --scale "1x1"               --pos "${CENTER_X}x0" --primary \
+        --output "$RIGHT_MONITOR"  --mode "$RIGHT_RES"  --rate "$RIGHT_RATE"  --scale "${SCALE}x${SCALE}" --pos "${RIGHT_X}x${VERT_OFFSET}"
 
     log_msg "Layout applied successfully."
+}
+
+sync_kscreen() {
+    # Feed kscreen "native" unscaled positions so monitors appear to touch
+    # in KDE display settings (no gap warning). The actual xrandr layout
+    # with scaling runs independently — kscreen just needs to believe
+    # all screens sit side-by-side at their native resolutions.
+    local kscreen_dir="${XDG_DATA_HOME:-$HOME/.local/share}/kscreen"
+    [[ -d "$kscreen_dir" ]] || return 0
+
+    command -v jq &>/dev/null || {
+        log_msg "jq not found, skipping kscreen sync (install jq to fix KDE gap warning)."
+        return 0
+    }
+
+    # Native (unscaled) dimensions
+    local left_w="${LEFT_RES%%x*}"
+    local left_h="${LEFT_RES##*x}"
+    local center_w="${CENTER_RES%%x*}"
+    local center_h="${CENTER_RES##*x}"
+
+    # Native positions — monitors touching, bottom-aligned
+    local fake_left_x=0
+    local fake_left_y=$(( center_h - left_h ))
+    local fake_center_x=$left_w
+    local fake_center_y=0
+    local fake_right_x=$(( left_w + center_w ))
+    local fake_right_y=$(( center_h - left_h ))
+
+    # Find config file containing our center monitor
+    local config_file
+    config_file=$(grep -rl "\"name\": \"${CENTER_MONITOR}\"" "$kscreen_dir"/[a-f0-9]* 2>/dev/null | head -1 || true)
+    [[ -n "$config_file" ]] || return 0
+
+    log_msg "Syncing kscreen config (native positions): $config_file"
+
+    # Write native positions with scale=1 — kscreen sees no gaps
+    jq --arg lm "$LEFT_MONITOR" --arg cm "$CENTER_MONITOR" --arg rm "$RIGHT_MONITOR" \
+       --argjson lx "$fake_left_x" --argjson ly "$fake_left_y" \
+       --argjson cx "$fake_center_x" --argjson cy "$fake_center_y" \
+       --argjson rx "$fake_right_x" --argjson ry "$fake_right_y" \
+       '
+       [.[] |
+         if .metadata.name == $lm then
+           .pos = {x: $lx, y: $ly} | .scale = 1
+         elif .metadata.name == $cm then
+           .pos = {x: $cx, y: $cy} | .scale = 1
+         elif .metadata.name == $rm then
+           .pos = {x: $rx, y: $ry} | .scale = 1
+         else .
+         end
+       ]' "$config_file" > "${config_file}.tmp" && mv "${config_file}.tmp" "$config_file"
+
+    log_msg "kscreen synced: DP-0@${fake_left_x}x${fake_left_y} DP-4@${fake_center_x}x${fake_center_y} DP-2@${fake_right_x}x${fake_right_y}"
 }
 
 revert_layout() {
@@ -124,9 +183,9 @@ revert_layout() {
     log_msg "Reverting to original layout (no scaling)..."
 
     xrandr \
-        --output "$LEFT_MONITOR"   --mode "$LEFT_RES"   --scale "1x1" --pos "0x${REVERT_LEFT_Y}" \
-        --output "$CENTER_MONITOR" --mode "$CENTER_RES" --scale "1x1" --pos "${LEFT_RES%%x*}x0" --primary \
-        --output "$RIGHT_MONITOR"  --mode "$RIGHT_RES"  --scale "1x1" --pos "${REVERT_RIGHT_X}x${REVERT_LEFT_Y}"
+        --output "$LEFT_MONITOR"   --mode "$LEFT_RES"   --rate "$LEFT_RATE"   --scale "1x1" --pos "0x${REVERT_LEFT_Y}" \
+        --output "$CENTER_MONITOR" --mode "$CENTER_RES" --rate "$CENTER_RATE" --scale "1x1" --pos "${LEFT_RES%%x*}x0" --primary \
+        --output "$RIGHT_MONITOR"  --mode "$RIGHT_RES"  --rate "$RIGHT_RATE"  --scale "1x1" --pos "${REVERT_RIGHT_X}x${REVERT_LEFT_Y}"
 
     log_msg "Reverted to original layout."
 }
@@ -211,6 +270,9 @@ case "${1:-help}" in
     apply)
         apply_scale
         restart_plasmashell
+        # Wait for kscreen to finish writing its config, then patch it
+        sleep 3
+        sync_kscreen
         echo "Done. Run '$(basename "$0") revert' to undo."
         ;;
     autostart)
@@ -218,9 +280,13 @@ case "${1:-help}" in
         sleep "$AUTOSTART_DELAY"
         apply_scale
         restart_plasmashell
+        sleep 3
+        sync_kscreen
         log_msg "Autostart: re-applying in ${AUTOSTART_REAPPLY_DELAY}s..."
         sleep "$AUTOSTART_REAPPLY_DELAY"
         apply_scale
+        sleep 3
+        sync_kscreen
         log_msg "Autostart: complete."
         ;;
     revert)

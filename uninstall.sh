@@ -9,6 +9,7 @@ readonly INSTALL_DIR="${HOME}/.local/bin"
 readonly CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/fix-mouse-jump"
 readonly AUTOSTART_DIR="${HOME}/.config/autostart"
 readonly LOG_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/fix-mouse-jump"
+readonly KSCREEN_PATCH_DIR="${HOME}/.local/share/kpackage/kcms/kcm_kscreen"
 
 echo "Uninstalling fix-mouse-jump..."
 echo ""
@@ -30,6 +31,12 @@ echo "  [✓] Autostart entry removed"
 # Remove log files
 rm -rf "$LOG_DIR"
 echo "  [✓] Log files removed"
+
+# Remove KDE kscreen UI patch
+if [[ -d "$KSCREEN_PATCH_DIR" ]]; then
+    rm -rf "$KSCREEN_PATCH_DIR"
+    echo "  [✓] KDE display settings patch removed"
+fi
 
 # Ask about config
 if [[ -d "$CONFIG_DIR" ]]; then

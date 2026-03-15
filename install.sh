@@ -9,6 +9,8 @@ readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 readonly INSTALL_DIR="${HOME}/.local/bin"
 readonly CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/fix-mouse-jump"
 readonly AUTOSTART_DIR="${HOME}/.config/autostart"
+readonly KSCREEN_PATCH_DIR="${HOME}/.local/share/kpackage/kcms/kcm_kscreen/contents/ui"
+readonly SYSTEM_KSCREEN_DIR="/usr/share/kpackage/kcms/kcm_kscreen/contents/ui"
 
 echo "Installing fix-mouse-jump..."
 echo ""
@@ -41,6 +43,31 @@ Terminal=false
 X-KDE-autostart-phase=2
 EOF
 echo "  [✓] Autostart entry created"
+
+# Install KDE kscreen UI patch (fixes gap warning + monitor positions)
+if [[ -d "$SYSTEM_KSCREEN_DIR" ]]; then
+    mkdir -p "$KSCREEN_PATCH_DIR"
+
+    # Copy the 3 patched QML files from this project
+    for qml_file in main.qml Output.qml Screen.qml; do
+        if [[ -f "$SCRIPT_DIR/kscreen-patch/contents/ui/$qml_file" ]]; then
+            cp "$SCRIPT_DIR/kscreen-patch/contents/ui/$qml_file" "$KSCREEN_PATCH_DIR/$qml_file"
+        fi
+    done
+
+    # Copy remaining QML files from system (needed for complete KCM package)
+    for qml_file in "$SYSTEM_KSCREEN_DIR"/*.qml; do
+        local_name="$(basename "$qml_file")"
+        if [[ ! -f "$KSCREEN_PATCH_DIR/$local_name" ]]; then
+            cp "$qml_file" "$KSCREEN_PATCH_DIR/$local_name"
+        fi
+    done
+
+    echo "  [✓] KDE display settings patch installed"
+    echo "      → Gap warning suppressed, monitors shown bottom-aligned"
+else
+    echo "  [–] KDE kscreen KCM not found, skipping UI patch"
+fi
 
 echo ""
 echo "Installation complete!"
