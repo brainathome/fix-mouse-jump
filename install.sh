@@ -11,6 +11,7 @@ readonly CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/fix-mouse-jump"
 readonly AUTOSTART_DIR="${HOME}/.config/autostart"
 readonly KSCREEN_PATCH_DIR="${HOME}/.local/share/kpackage/kcms/kcm_kscreen/contents/ui"
 readonly SYSTEM_KSCREEN_DIR="/usr/share/kpackage/kcms/kcm_kscreen/contents/ui"
+readonly SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
 
 echo "Installing fix-mouse-jump..."
 echo ""
@@ -67,6 +68,42 @@ if [[ -d "$SYSTEM_KSCREEN_DIR" ]]; then
     echo "      → Gap warning suppressed, monitors shown bottom-aligned"
 else
     echo "  [–] KDE kscreen KCM not found, skipping UI patch"
+fi
+
+# Save kscreen QML fingerprint (for update detection)
+if [[ -d "$SYSTEM_KSCREEN_DIR" ]]; then
+    find "$SYSTEM_KSCREEN_DIR" -name '*.qml' -exec md5sum {} + 2>/dev/null \
+        | sort | md5sum | cut -d' ' -f1 > "$CONFIG_DIR/kscreen-version"
+    echo "  [✓] kscreen version fingerprint saved (for update detection)"
+fi
+
+# Install systemd path watcher (detects kscreen package updates)
+if command -v systemctl &>/dev/null; then
+    mkdir -p "$SYSTEMD_USER_DIR"
+
+    cat > "$SYSTEMD_USER_DIR/fix-mouse-jump-watch.path" << 'PATHEOF'
+[Unit]
+Description=Watch for kscreen QML updates
+
+[Path]
+PathChanged=/usr/share/kpackage/kcms/kcm_kscreen/contents/ui/main.qml
+
+[Install]
+WantedBy=default.target
+PATHEOF
+
+    cat > "$SYSTEMD_USER_DIR/fix-mouse-jump-watch.service" << SVCEOF
+[Unit]
+Description=Check for kscreen updates (fix-mouse-jump)
+
+[Service]
+Type=oneshot
+ExecStart=${INSTALL_DIR}/fix-mouse-jump check-update
+SVCEOF
+
+    systemctl --user daemon-reload 2>/dev/null || true
+    systemctl --user enable --now fix-mouse-jump-watch.path 2>/dev/null || true
+    echo "  [✓] systemd file watcher installed (auto-detects kscreen updates)"
 fi
 
 echo ""

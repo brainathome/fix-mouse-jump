@@ -42,3 +42,9 @@ AUTOSTART_REAPPLY_DELAY=20
 # ─── Plasmashell ─────────────────────────────────────────────────────────────
 # Restart plasmashell after applying (fixes wallpaper rendering on scaled monitors)
 RESTART_PLASMASHELL=true
+
+# ─── Watchdog ────────────────────────────────────────────────────────────────
+# Monitor layout continuously after login — if kscreen2 or plasmashell resets
+# the scaling, the watchdog automatically re-applies the correct layout.
+WATCHDOG_ENABLED=true
+WATCHDOG_INTERVAL=30   # Check interval in seconds

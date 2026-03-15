@@ -57,6 +57,10 @@ AUTOSTART_REAPPLY_DELAY=20
 # Restart plasmashell after applying (fixes wallpaper rendering)
 RESTART_PLASMASHELL=true
 
+# Watchdog — monitors for layout resets and re-applies automatically
+WATCHDOG_ENABLED=true
+WATCHDOG_INTERVAL=30
+
 # ─── END DEFAULT CONFIG ─────────────────────────────────────────────────────
 
 readonly APP_NAME="fix-mouse-jump"
@@ -64,6 +68,9 @@ readonly CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/${APP_NAME}"
 readonly CONFIG_FILE="${CONFIG_DIR}/config"
 readonly LOG_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/${APP_NAME}"
 readonly LOG_FILE="${LOG_DIR}/${APP_NAME}.log"
+readonly FINGERPRINT_FILE="${CONFIG_DIR}/kscreen-version"
+readonly PID_FILE="${LOG_DIR}/watchdog.pid"
+readonly SYSTEM_KSCREEN_DIR="/usr/share/kpackage/kcms/kcm_kscreen/contents/ui"
 
 # ─── FUNCTIONS ───────────────────────────────────────────────────────────────
 
@@ -177,6 +184,87 @@ sync_kscreen() {
     log_msg "kscreen synced: DP-0@${fake_left_x}x${fake_left_y} DP-4@${fake_center_x}x${fake_center_y} DP-2@${fake_right_x}x${fake_right_y}"
 }
 
+# ─── VERSION CHECK ───────────────────────────────────────────────────────────
+
+save_kscreen_fingerprint() {
+    if [[ -d "$SYSTEM_KSCREEN_DIR" ]]; then
+        mkdir -p "$CONFIG_DIR"
+        find "$SYSTEM_KSCREEN_DIR" -name '*.qml' -exec md5sum {} + 2>/dev/null \
+            | sort | md5sum | cut -d' ' -f1 > "$FINGERPRINT_FILE"
+        log_msg "Saved kscreen QML fingerprint."
+    fi
+}
+
+check_kscreen_update() {
+    [[ -f "$FINGERPRINT_FILE" ]] || return 0
+    [[ -d "$SYSTEM_KSCREEN_DIR" ]] || return 0
+
+    local current_fp saved_fp
+    current_fp=$(find "$SYSTEM_KSCREEN_DIR" -name '*.qml' -exec md5sum {} + 2>/dev/null \
+        | sort | md5sum | cut -d' ' -f1)
+    saved_fp=$(cat "$FINGERPRINT_FILE")
+
+    if [[ "$current_fp" != "$saved_fp" ]]; then
+        log_msg "WARNING: kscreen QML files changed (system update detected)!"
+        log_msg "  Re-run install.sh to update KDE display settings patches."
+        notify-send -u critical -i display "fix-mouse-jump" \
+            "KDE display settings (kscreen) was updated by the system.\nRe-run install.sh to restore patches." \
+            2>/dev/null || true
+        return 1
+    fi
+    log_msg "kscreen version check: OK (unchanged)."
+    return 0
+}
+
+# ─── WATCHDOG ────────────────────────────────────────────────────────────────
+
+check_scaling_active() {
+    local current_x
+    current_x=$(xrandr --query 2>/dev/null \
+        | grep "^${CENTER_MONITOR} " \
+        | grep -oP '\+\K\d+(?=\+)' || echo "")
+    [[ -z "$current_x" ]] && return 0  # monitor not found, skip
+
+    calculate_positions
+    [[ "$current_x" == "$CENTER_X" ]]
+}
+
+kill_existing_watchdog() {
+    if [[ -f "$PID_FILE" ]]; then
+        local old_pid
+        old_pid=$(cat "$PID_FILE" 2>/dev/null || echo "")
+        if [[ -n "$old_pid" ]] && kill -0 "$old_pid" 2>/dev/null; then
+            kill "$old_pid" 2>/dev/null || true
+            log_msg "Stopped existing watchdog (PID ${old_pid})."
+        fi
+        rm -f "$PID_FILE"
+    fi
+}
+
+run_watchdog() {
+    kill_existing_watchdog
+    mkdir -p "$LOG_DIR"
+    trap 'rm -f "$PID_FILE"' EXIT
+    echo $$ > "$PID_FILE"
+
+    log_msg "Watchdog: started (PID $$, interval ${WATCHDOG_INTERVAL}s)"
+
+    while true; do
+        sleep "$WATCHDOG_INTERVAL"
+
+        if ! check_scaling_active; then
+            log_msg "Watchdog: scaling lost — re-applying..."
+            apply_scale
+            sleep 3
+            sync_kscreen
+            log_msg "Watchdog: layout restored."
+            notify-send -i display "fix-mouse-jump" \
+                "Display scaling was reset. Watchdog restored the correct layout." \
+                2>/dev/null || true
+        fi
+    done
+}
+
 revert_layout() {
     calculate_positions
 
@@ -228,11 +316,14 @@ USAGE
     fix-mouse-jump <command>
 
 COMMANDS
-    apply       Apply scaled monitor layout for smooth mouse transitions
-    revert      Revert to original unscaled layout
-    autostart   Apply with delay (intended for login autostart)
-    status      Show current monitor configuration and log
-    help        Show this help message
+    apply            Apply scaled monitor layout for smooth mouse transitions
+    revert           Revert to original unscaled layout
+    autostart        Apply with delay + start watchdog (for login autostart)
+    watchdog         Start layout watchdog (auto-restores scaling if reset)
+    check-update     Check if kscreen was updated (patches may need reinstall)
+    save-fingerprint Save current kscreen version fingerprint
+    status           Show current monitor configuration and log
+    help             Show this help message
 
 CONFIGURATION
     Copy the included config.example to:
@@ -276,6 +367,9 @@ case "${1:-help}" in
         echo "Done. Run '$(basename "$0") revert' to undo."
         ;;
     autostart)
+        # Check for kscreen system updates before applying
+        check_kscreen_update || true
+
         log_msg "Autostart: waiting ${AUTOSTART_DELAY}s for kscreen2..."
         sleep "$AUTOSTART_DELAY"
         apply_scale
@@ -288,6 +382,11 @@ case "${1:-help}" in
         sleep 3
         sync_kscreen
         log_msg "Autostart: complete."
+
+        # Start watchdog to monitor for layout resets
+        if [[ "${WATCHDOG_ENABLED}" == true ]]; then
+            run_watchdog
+        fi
         ;;
     revert)
         revert_layout
@@ -296,6 +395,25 @@ case "${1:-help}" in
         ;;
     status)
         show_status
+        ;;
+    watchdog)
+        if [[ "${WATCHDOG_ENABLED}" != true ]]; then
+            echo "Watchdog is disabled. Set WATCHDOG_ENABLED=true in config."
+            exit 0
+        fi
+        run_watchdog
+        ;;
+    check-update)
+        if check_kscreen_update; then
+            echo "kscreen QML files are unchanged — patches are up to date."
+        else
+            echo "WARNING: kscreen was updated! Re-run install.sh to restore patches."
+            exit 1
+        fi
+        ;;
+    save-fingerprint)
+        save_kscreen_fingerprint
+        echo "Saved kscreen QML fingerprint."
         ;;
     help|--help|-h)
         show_help

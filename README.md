@@ -99,7 +99,9 @@ nano ~/.config/fix-mouse-jump/config
 | Config | `~/.config/fix-mouse-jump/config` | Monitor names, resolutions, scale |
 | Autostart | `~/.config/autostart/fix-mouse-jump.desktop` | Auto-apply at login |
 | KDE UI patch | `~/.local/share/kpackage/kcms/kcm_kscreen/contents/ui/` | Fix display settings UI |
-| Logs | `~/.local/share/fix-mouse-jump/` | Runtime log file |
+| Version fingerprint | `~/.config/fix-mouse-jump/kscreen-version` | Detects kscreen package updates |
+| systemd watcher | `~/.config/systemd/user/fix-mouse-jump-watch.*` | Triggers on kscreen file changes |
+| Logs | `~/.local/share/fix-mouse-jump/` | Runtime log + watchdog PID |
 
 ## Configuration
 
@@ -154,6 +156,10 @@ AUTOSTART_REAPPLY_DELAY=20  # Re-apply after kscreen2 may reset layout
 
 # ─── Plasmashell ─────────────────────────────────────────────────────────────
 RESTART_PLASMASHELL=true   # Restart plasmashell (fixes wallpaper rendering)
+
+# ─── Watchdog ────────────────────────────────────────────────────────────────
+WATCHDOG_ENABLED=true    # Monitor layout and auto-restore if reset
+WATCHDOG_INTERVAL=30     # Check interval in seconds
 ```
 
 ## Usage
@@ -164,6 +170,15 @@ fix-mouse-jump apply
 
 # Revert to original layout (no scaling)
 fix-mouse-jump revert
+
+# Start watchdog manually (auto-restores scaling if reset)
+fix-mouse-jump watchdog
+
+# Check if kscreen was updated (patches may need reinstall)
+fix-mouse-jump check-update
+
+# Save current kscreen version fingerprint
+fix-mouse-jump save-fingerprint
 
 # Show current monitor status
 fix-mouse-jump status
@@ -183,10 +198,12 @@ The fix is automatically applied at login via the autostart entry.
 
 ### How `autostart` Works
 
-1. Wait `AUTOSTART_DELAY` seconds (default: 10) for kscreen2 to finish initial setup
-2. Apply scaling + restart plasmashell + sync kscreen
-3. Wait `AUTOSTART_REAPPLY_DELAY` seconds (default: 20) in case kscreen2 resets the layout
-4. Re-apply scaling + re-sync kscreen
+1. **Version check** — Compares kscreen QML fingerprint with saved version; warns via desktop notification if kscreen was updated
+2. Wait `AUTOSTART_DELAY` seconds (default: 10) for kscreen2 to finish initial setup
+3. Apply scaling + restart plasmashell + sync kscreen
+4. Wait `AUTOSTART_REAPPLY_DELAY` seconds (default: 20) in case kscreen2 resets the layout
+5. Re-apply scaling + re-sync kscreen
+6. **Start watchdog** — Monitors xrandr layout every `WATCHDOG_INTERVAL` seconds and re-applies if scaling is lost
 
 ## Uninstall
 
@@ -196,14 +213,44 @@ The fix is automatically applied at login via the autostart entry.
 
 This reverts the monitor layout, removes the script, autostart entry, KDE UI patches, and logs. Config is kept unless you confirm deletion.
 
+## Robustness & Persistence
+
+The tool is designed to survive reboots and system updates:
+
+| Scenario | Protection |
+|----------|------------|
+| **Reboot** | Autostart re-applies xrandr scaling + kscreen sync on every login |
+| **plasmashell crash** | Watchdog detects scaling loss within 30s and re-applies automatically |
+| **kscreen2 layout reset** | Watchdog monitors xrandr positions and restores correct layout |
+| **KDE/kscreen package update** | systemd path watcher triggers immediately; desktop notification warns to re-run `install.sh` |
+| **Login version check** | On every autostart, kscreen QML fingerprint is compared with saved version |
+
+### Watchdog
+
+After the autostart apply sequence, the script enters a watchdog loop that checks every `WATCHDOG_INTERVAL` seconds (default: 30) whether the center monitor is still at the expected scaled position. If the layout was reset (by kscreen, plasmashell crash, or manual xrandr call), the watchdog automatically:
+1. Re-applies xrandr scaling
+2. Re-syncs the kscreen config
+3. Sends a desktop notification
+
+Disable with `WATCHDOG_ENABLED=false` in the config.
+
+### Update Detection
+
+During installation, an MD5 fingerprint of the system kscreen QML files is saved. Two mechanisms detect updates:
+
+1. **systemd path watcher** — Monitors `/usr/share/kpackage/kcms/kcm_kscreen/contents/ui/main.qml` for changes. Triggers immediately when `apt upgrade` updates the kscreen package.
+2. **Login check** — Every autostart compares the current fingerprint with the saved one.
+
+Both send a desktop notification if a mismatch is detected. Re-run `./install.sh` to re-apply patches after updates.
+
 ## Project Structure
 
 ```
 fix-mouse-jump/
 ├── fix-mouse-jump          # Main script (bash)
 ├── config.example          # Example configuration
-├── install.sh              # Installer
-├── uninstall.sh            # Uninstaller
+├── install.sh              # Installer (+ fingerprint + systemd watcher)
+├── uninstall.sh            # Uninstaller (cleans up everything)
 ├── kscreen-patch/          # KDE display settings UI fix
 │   └── contents/ui/
 │       ├── main.qml        # Suppresses ConfigHasGaps warning
@@ -241,9 +288,10 @@ The patches are installed as local KPackage overrides in `~/.local/share/kpackag
 
 - **X11 only** — On Wayland, per-monitor scaling is handled natively by the compositor (no fix needed).
 - **KDE Plasma 5 only** — The QML patch targets KDE Plasma 5's `kcm_kscreen`. Plasma 6 (expected in Kubuntu 26.04 LTS) handles per-monitor scaling natively.
-- **Don't click "Apply" in KDE display settings** — This would override the xrandr layout. Run `fix-mouse-jump apply` again to restore.
+- **Don't click "Apply" in KDE display settings** — This would override the xrandr layout. The watchdog will auto-restore within 30s, or run `fix-mouse-jump apply` manually.
 - **Text size** — Side monitors show slightly smaller text due to the virtual resolution increase. This is expected and matches the physical DPI.
-- **System updates** — KDE updates may overwrite the QML patch base files. Re-run `./install.sh` after updates.
+- **System updates** — KDE updates may change the QML APIs. The systemd watcher and login check will warn you; re-run `./install.sh` to re-apply patches.
+- **Boot window** — For the first ~10 seconds after login, scaling is not yet active (xrandr is volatile). The autostart delay lets kscreen2 settle first.
 
 ## Tested Setup
 
