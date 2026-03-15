@@ -1,0 +1,242 @@
+#!/usr/bin/env bash
+# =============================================================================
+# fix-mouse-jump — DPI-aware mouse transition fix for multi-monitor setups
+# =============================================================================
+#
+# Scales side monitors via xrandr so that mouse movement between screens with
+# different resolutions/DPI values is physically accurate (no "mouse jump").
+#
+# This solves the same problem as LittleBigMouse (Windows) on Linux/X11 with
+# KDE Plasma.
+#
+# Usage:
+#   fix-mouse-jump apply        Apply scaled layout
+#   fix-mouse-jump revert       Revert to original layout
+#   fix-mouse-jump autostart    Apply with delay (for login autostart)
+#   fix-mouse-jump status       Show current monitor configuration
+#   fix-mouse-jump help         Show help
+#
+# Configuration:
+#   Copy config.example to ~/.config/fix-mouse-jump/config and edit to match
+#   your monitor setup.
+#
+# License: GPL-3.0
+# =============================================================================
+
+set -euo pipefail
+
+# ─── DEFAULT CONFIG ──────────────────────────────────────────────────────────
+# Override these in ~/.config/fix-mouse-jump/config
+
+# Monitor output names (use `xrandr --query` to find yours)
+LEFT_MONITOR="DP-0"
+CENTER_MONITOR="DP-4"
+RIGHT_MONITOR="DP-2"
+
+# Native resolutions
+LEFT_RES="1920x1080"
+CENTER_RES="3840x1600"
+RIGHT_RES="1920x1080"
+
+# Scale factor for side monitors
+# Calculate: (center_vertical_px / center_physical_mm) / (side_vertical_px / side_physical_mm)
+# Example:   (1600 / 370) / (1080 / 336) = 4.32 / 3.21 ≈ 1.35
+SCALE="1.35"
+
+# Delay before applying in autostart mode (seconds)
+AUTOSTART_DELAY=10
+
+# Re-apply delay to counter kscreen2 resets (seconds)
+AUTOSTART_REAPPLY_DELAY=20
+
+# Restart plasmashell after applying (fixes wallpaper rendering)
+RESTART_PLASMASHELL=true
+
+# ─── END DEFAULT CONFIG ─────────────────────────────────────────────────────
+
+readonly APP_NAME="fix-mouse-jump"
+readonly CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/${APP_NAME}"
+readonly CONFIG_FILE="${CONFIG_DIR}/config"
+readonly LOG_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/${APP_NAME}"
+readonly LOG_FILE="${LOG_DIR}/${APP_NAME}.log"
+
+# ─── FUNCTIONS ───────────────────────────────────────────────────────────────
+
+load_config() {
+    if [[ -f "$CONFIG_FILE" ]]; then
+        # shellcheck source=/dev/null
+        source "$CONFIG_FILE"
+    fi
+}
+
+log_msg() {
+    local msg="[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+    mkdir -p "$LOG_DIR"
+    echo "$msg" >> "$LOG_FILE"
+    echo "$msg"
+}
+
+calculate_positions() {
+    local left_w left_h center_w center_h right_w right_h
+
+    left_w="${LEFT_RES%%x*}"
+    left_h="${LEFT_RES##*x}"
+    center_w="${CENTER_RES%%x*}"
+    center_h="${CENTER_RES##*x}"
+    right_w="${RIGHT_RES%%x*}"
+    right_h="${RIGHT_RES##*x}"
+
+    # Scaled dimensions for side monitors
+    SCALED_LEFT_W=$(awk "BEGIN { printf \"%.0f\", $left_w * $SCALE }")
+    SCALED_LEFT_H=$(awk "BEGIN { printf \"%.0f\", $left_h * $SCALE }")
+
+    # Positions
+    CENTER_X=$SCALED_LEFT_W
+    RIGHT_X=$(awk "BEGIN { printf \"%.0f\", $SCALED_LEFT_W + $center_w }")
+
+    # Vertical offset to center side monitors relative to center
+    VERT_OFFSET=$(awk "BEGIN { printf \"%.0f\", ($center_h - $SCALED_LEFT_H) / 2 }")
+
+    # Revert positions (no scaling)
+    REVERT_LEFT_Y=$(( (center_h - left_h) / 2 ))
+    REVERT_RIGHT_X=$(( left_w + center_w ))
+}
+
+apply_scale() {
+    calculate_positions
+
+    log_msg "Applying layout: scale=${SCALE} on ${LEFT_MONITOR} and ${RIGHT_MONITOR}"
+    log_msg "  ${LEFT_MONITOR}:   ${LEFT_RES} scaled ${SCALE}x → pos 0x${VERT_OFFSET}"
+    log_msg "  ${CENTER_MONITOR}: ${CENTER_RES}          → pos ${CENTER_X}x0 (primary)"
+    log_msg "  ${RIGHT_MONITOR}:  ${RIGHT_RES} scaled ${SCALE}x → pos ${RIGHT_X}x${VERT_OFFSET}"
+
+    xrandr \
+        --output "$LEFT_MONITOR"   --mode "$LEFT_RES"   --scale "${SCALE}x${SCALE}" --pos "0x${VERT_OFFSET}" \
+        --output "$CENTER_MONITOR" --mode "$CENTER_RES" --scale "1x1"               --pos "${CENTER_X}x0" --primary \
+        --output "$RIGHT_MONITOR"  --mode "$RIGHT_RES"  --scale "${SCALE}x${SCALE}" --pos "${RIGHT_X}x${VERT_OFFSET}"
+
+    log_msg "Layout applied successfully."
+}
+
+revert_layout() {
+    calculate_positions
+
+    log_msg "Reverting to original layout (no scaling)..."
+
+    xrandr \
+        --output "$LEFT_MONITOR"   --mode "$LEFT_RES"   --scale "1x1" --pos "0x${REVERT_LEFT_Y}" \
+        --output "$CENTER_MONITOR" --mode "$CENTER_RES" --scale "1x1" --pos "${LEFT_RES%%x*}x0" --primary \
+        --output "$RIGHT_MONITOR"  --mode "$RIGHT_RES"  --scale "1x1" --pos "${REVERT_RIGHT_X}x${REVERT_LEFT_Y}"
+
+    log_msg "Reverted to original layout."
+}
+
+restart_plasmashell() {
+    if [[ "$RESTART_PLASMASHELL" == true ]]; then
+        log_msg "Restarting plasmashell..."
+        kquitapp5 plasmashell 2>/dev/null || true
+        sleep 2
+        kstart5 plasmashell &
+        disown
+        log_msg "Plasmashell restarted."
+    fi
+}
+
+show_status() {
+    echo "═══════════════════════════════════════════════════════════"
+    echo "  ${APP_NAME} — Current Monitor Configuration"
+    echo "═══════════════════════════════════════════════════════════"
+    echo ""
+    echo "  Connected monitors:"
+    xrandr --query | grep -E "connected " | sed 's/^/    /'
+    echo ""
+    echo "  Config: ${CONFIG_FILE}"
+    echo "  Log:    ${LOG_FILE}"
+    echo ""
+    if [[ -f "$LOG_FILE" ]]; then
+        echo "  Last 5 log entries:"
+        tail -5 "$LOG_FILE" | sed 's/^/    /'
+    fi
+    echo ""
+    echo "═══════════════════════════════════════════════════════════"
+}
+
+show_help() {
+    cat <<'EOF'
+fix-mouse-jump — DPI-aware mouse transition fix for multi-monitor setups
+
+USAGE
+    fix-mouse-jump <command>
+
+COMMANDS
+    apply       Apply scaled monitor layout for smooth mouse transitions
+    revert      Revert to original unscaled layout
+    autostart   Apply with delay (intended for login autostart)
+    status      Show current monitor configuration and log
+    help        Show this help message
+
+CONFIGURATION
+    Copy the included config.example to:
+        ~/.config/fix-mouse-jump/config
+
+    Then edit the monitor names, resolutions, and scale factor to match
+    your setup. Use `xrandr --query` to find your monitor output names.
+
+HOW IT WORKS
+    On X11, monitors with different DPI cause a "mouse jump" at screen
+    edges — the cursor position doesn't match up physically. This tool
+    uses xrandr scaling to virtually increase the resolution of lower-DPI
+    monitors, so pixel positions correspond to physical positions.
+
+    The scale factor is calculated as:
+        (center_px/mm) / (side_px/mm)
+
+    For example:
+        Center: 3840x1600 @ 880mm wide  → 4.36 px/mm
+        Side:   1920x1080 @ 597mm wide  → 3.22 px/mm
+        Scale:  4.36 / 3.22 ≈ 1.35
+
+EXAMPLES
+    fix-mouse-jump apply          # Fix mouse jump now
+    fix-mouse-jump revert         # Undo the fix
+    fix-mouse-jump status         # Check current state
+EOF
+}
+
+# ─── MAIN ────────────────────────────────────────────────────────────────────
+
+load_config
+
+case "${1:-help}" in
+    apply)
+        apply_scale
+        restart_plasmashell
+        echo "Done. Run '$(basename "$0") revert' to undo."
+        ;;
+    autostart)
+        log_msg "Autostart: waiting ${AUTOSTART_DELAY}s for kscreen2..."
+        sleep "$AUTOSTART_DELAY"
+        apply_scale
+        restart_plasmashell
+        log_msg "Autostart: re-applying in ${AUTOSTART_REAPPLY_DELAY}s..."
+        sleep "$AUTOSTART_REAPPLY_DELAY"
+        apply_scale
+        log_msg "Autostart: complete."
+        ;;
+    revert)
+        revert_layout
+        restart_plasmashell
+        echo "Reverted to original layout."
+        ;;
+    status)
+        show_status
+        ;;
+    help|--help|-h)
+        show_help
+        ;;
+    *)
+        echo "Error: Unknown command '$1'" >&2
+        show_help
+        exit 1
+        ;;
+esac

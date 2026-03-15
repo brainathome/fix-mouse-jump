@@ -1,0 +1,38 @@
+# fix-mouse-jump configuration
+# Copy this file to: ~/.config/fix-mouse-jump/config
+#
+# Find your monitor names with: xrandr --query | grep " connected"
+
+# ─── Monitor Output Names ───────────────────────────────────────────────────
+LEFT_MONITOR="DP-0"
+CENTER_MONITOR="DP-4"
+RIGHT_MONITOR="DP-2"
+
+# ─── Native Resolutions ─────────────────────────────────────────────────────
+LEFT_RES="1920x1080"
+CENTER_RES="3840x1600"
+RIGHT_RES="1920x1080"
+
+# ─── Scale Factor ────────────────────────────────────────────────────────────
+# How to calculate:
+#   1. Get physical size and resolution from `xrandr --query`
+#   2. center_ppmm = center_height_px / center_height_mm
+#   3. side_ppmm   = side_height_px   / side_height_mm
+#   4. SCALE       = center_ppmm / side_ppmm
+#
+# Example (UWQHD 38" center + FHD 27" sides):
+#   center: 1600px / 370mm = 4.32 px/mm
+#   side:   1080px / 336mm = 3.21 px/mm
+#   SCALE:  4.32 / 3.21    = 1.35
+SCALE="1.35"
+
+# ─── Autostart Settings ─────────────────────────────────────────────────────
+# Delay before first apply (lets kscreen2 finish its setup)
+AUTOSTART_DELAY=10
+
+# Delay before re-applying (in case kscreen2 resets the layout)
+AUTOSTART_REAPPLY_DELAY=20
+
+# ─── Plasmashell ─────────────────────────────────────────────────────────────
+# Restart plasmashell after applying (fixes wallpaper rendering on scaled monitors)
+RESTART_PLASMASHELL=true
